@@ -70,6 +70,22 @@
     color: var(--ink-soft);
     margin: 8px 0 0;
   }
+  .masthead-reset{
+    margin-top: 10px;
+  }
+  .masthead-reset button{
+    font-family:'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: var(--ink-soft);
+    background: none;
+    border: none;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+    padding: 4px;
+  }
+  .masthead-reset button:hover{ color: var(--rust); }
 
   .stage{ padding: clamp(20px, 6vw, 28px) clamp(18px, 6vw, 32px) clamp(24px, 6vw, 32px); }
   .step-label{
@@ -91,7 +107,7 @@
   }
   .hint{ font-size:12px; color: var(--ink-soft); margin: 6px 0 0; }
 
-  input[type=text], input[type=number]{
+  input[type=text], input[type=number], select{
     width:100%;
     font-family:'Inter', sans-serif;
     font-size: 16px;
@@ -103,6 +119,14 @@
     outline: none;
     transition: border-color .15s ease, box-shadow .15s ease;
   }
+  select{ appearance:none; -webkit-appearance:none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%), linear-gradient(135deg, var(--ink-soft) 50%, transparent 50%);
+    background-position: calc(100% - 18px) center, calc(100% - 13px) center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 32px;
+  }
+  select:invalid{ color: var(--ink-soft); }
   input:focus-visible{
     border-color: var(--green);
     box-shadow: 0 0 0 3px rgba(47,111,79,0.15);
@@ -221,10 +245,38 @@
   .person-head{ display:flex; justify-content:space-between; align-items:baseline; }
   .person-head .pname{ font-family:'Fraunces', serif; font-weight:600; font-size: 18px; }
   .person-head .pamt{ font-family:'IBM Plex Mono', monospace; font-size: 18px; }
+  .person-head .pamt.positive{ color: var(--green-deep); }
+  .person-head .pamt.negative{ color: var(--rust); }
+  .person-sub{ font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
   .person-lines{ margin-top: 6px; }
   .person-lines .line{
     display:flex; justify-content:space-between;
     font-size: 12.5px; color: var(--ink-soft); padding: 2px 0;
+  }
+
+  .settle-section{ margin-top: 26px; }
+  .settle-list{ margin-top: 10px; }
+  .settle-row{
+    display:flex; align-items:center; gap: 10px;
+    background: var(--white);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    font-size: 13.5px;
+    flex-wrap: wrap;
+  }
+  .settle-row .who{ font-weight:600; }
+  .settle-row .arrow{ color: var(--ink-soft); }
+  .settle-row .amt{
+    margin-left: auto;
+    font-family:'IBM Plex Mono', monospace;
+    font-weight:600;
+    color: var(--rust);
+  }
+  .settle-empty{
+    text-align:center; padding: 16px 10px; color: var(--ink-soft); font-size:13px;
+    background: var(--white); border: 1px dashed var(--rule); border-radius: var(--radius);
   }
 
   .stamp{
@@ -286,6 +338,7 @@
     <p class="eyebrow">No. 001 · Shared Ledger</p>
     <h1>Split</h1>
     <p class="sub">Even shares, honestly kept.</p>
+    <div id="masthead-status"></div>
   </header>
 
   <div class="stage" id="stage"><!-- rendered by JS --></div>
@@ -295,13 +348,42 @@
 (function(){
   "use strict";
 
+  const STORAGE_KEY = "split-expenses-session";
+  const EXPIRY_MS = 24 * 60 * 60 * 1000; // 1 day
+
   const state = {
     step: "names",       // names -> mode -> equal-total | items -> breakdown
     people: [],
     mode: null,           // 'equal' | 'items'
     equalTotal: null,
-    items: []             // {id, name, cost, participants: [names]}
+    equalPaidBy: null,
+    items: []             // {id, name, cost, paidBy, participants: [names]}
   };
+
+  function saveSession(){
+    try{
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), state }));
+    } catch(e){ /* storage unavailable — fail silently, session just won't persist */ }
+  }
+
+  function clearSession(){
+    try{ localStorage.removeItem(STORAGE_KEY); } catch(e){}
+  }
+
+  function loadSession(){
+    try{
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(!raw) return false;
+      const parsed = JSON.parse(raw);
+      if(!parsed || typeof parsed.savedAt !== "number") return false;
+      if(Date.now() - parsed.savedAt > EXPIRY_MS){
+        clearSession();
+        return false;
+      }
+      Object.assign(state, parsed.state);
+      return state.people && state.people.length > 0;
+    } catch(e){ return false; }
+  }
 
   const stage = document.getElementById("stage");
   const money = n => (Math.round(n * 100) / 100).toFixed(2);
@@ -309,11 +391,30 @@
 
   function render(){
     stage.innerHTML = "";
+    saveSession();
+    renderMastheadStatus();
     if(state.step === "names") return renderNames();
     if(state.step === "mode") return renderMode();
     if(state.step === "equal-total") return renderEqualTotal();
     if(state.step === "items") return renderItems();
     if(state.step === "breakdown") return renderBreakdown();
+  }
+
+  function renderMastheadStatus(){
+    const el = document.getElementById("masthead-status");
+    if(!el) return;
+    if(state.people.length > 0 && state.step !== "names"){
+      el.innerHTML = `<p class="masthead-reset"><button type="button" id="masthead-reset-btn">Start fresh</button></p>`;
+      document.getElementById("masthead-reset-btn").addEventListener("click", () => {
+        if(!confirm("Start a new split? This clears the current one.")) return;
+        state.people = []; state.mode = null; state.equalTotal = null; state.equalPaidBy = null; state.items = [];
+        state.step = "names";
+        clearSession();
+        render();
+      });
+    } else {
+      el.innerHTML = "";
+    }
   }
 
   // ---------- Step: names ----------
@@ -395,6 +496,13 @@
       <p class="step-label"><b>Step 3</b> · Total amount spent</p>
       <label for="total-input">Amount</label>
       <input type="number" id="total-input" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
+      <div style="margin-top:12px;">
+        <label for="equal-paidby">Who paid?</label>
+        <select id="equal-paidby">
+          <option value="" disabled ${!state.equalPaidBy ? "selected" : ""}>Select person</option>
+          ${state.people.map(p => `<option value="${escapeHtml(p)}" ${state.equalPaidBy === p ? "selected" : ""}>${escapeHtml(p)}</option>`).join("")}
+        </select>
+      </div>
       <p class="hint">Split evenly across ${state.people.length} people: ${state.people.join(", ")}.</p>
       <div class="foot-actions">
         <button class="btn ghost" id="equal-back">Back</button>
@@ -402,18 +510,23 @@
       </div>
     `);
     const input = document.getElementById("total-input");
+    const paidBySelect = document.getElementById("equal-paidby");
     const nextBtn = document.getElementById("equal-next");
     if(state.equalTotal) input.value = state.equalTotal;
-    input.addEventListener("input", () => {
-      nextBtn.disabled = !(parseFloat(input.value) > 0);
-    });
-    nextBtn.disabled = !(parseFloat(input.value) > 0);
+
+    function validate(){
+      nextBtn.disabled = !(parseFloat(input.value) > 0 && paidBySelect.value !== "");
+    }
+    input.addEventListener("input", validate);
+    paidBySelect.addEventListener("change", validate);
+    validate();
     input.focus();
     document.getElementById("equal-back").addEventListener("click", () => {
       state.step = "mode"; render();
     });
     nextBtn.addEventListener("click", () => {
       state.equalTotal = parseFloat(input.value);
+      state.equalPaidBy = paidBySelect.value;
       state.step = "breakdown";
       render();
     });
@@ -434,6 +547,13 @@
         <div>
           <label for="item-cost">Cost</label>
           <input type="number" id="item-cost" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
+        </div>
+        <div>
+          <label for="item-paidby">Paid by</label>
+          <select id="item-paidby">
+            <option value="" disabled selected>Select owner</option>
+            ${state.people.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("")}
+          </select>
         </div>
       </div>
       <fieldset>
@@ -484,16 +604,19 @@
 
     const nameInput = document.getElementById("item-name");
     const costInput = document.getElementById("item-cost");
+    const paidBySelect = document.getElementById("item-paidby");
     const addBtn = document.getElementById("add-item");
 
     function validate(){
       const hasName = nameInput.value.trim().length > 0;
       const hasCost = parseFloat(costInput.value) > 0;
+      const hasOwner = paidBySelect.value !== "";
       const hasParticipants = checks().some(c => c.checked);
-      addBtn.disabled = !(hasName && hasCost && hasParticipants);
+      addBtn.disabled = !(hasName && hasCost && hasOwner && hasParticipants);
     }
     nameInput.addEventListener("input", validate);
     costInput.addEventListener("input", validate);
+    paidBySelect.addEventListener("change", validate);
     validate();
     nameInput.focus();
 
@@ -503,8 +626,10 @@
         id: uid(),
         name: nameInput.value.trim(),
         cost: parseFloat(costInput.value),
+        paidBy: paidBySelect.value,
         participants
       });
+      saveSession();
       renderItems(); // re-render fresh, cheap and keeps state consistent
       stage.querySelectorAll("#item-name")[0].focus();
     });
@@ -530,7 +655,7 @@
       <div class="item-row">
         <div>
           <div class="name">${escapeHtml(it.name)}</div>
-          <div class="split-note">split ${it.participants.length} way${it.participants.length === 1 ? "" : "s"} — ${it.participants.map(escapeHtml).join(", ")}</div>
+          <div class="split-note">paid by ${escapeHtml(it.paidBy)} — split ${it.participants.length} way${it.participants.length === 1 ? "" : "s"} — ${it.participants.map(escapeHtml).join(", ")}</div>
         </div>
         <div style="text-align:right;">
           <div class="amt">₹${money(it.cost)}</div>
@@ -541,6 +666,7 @@
     list.querySelectorAll(".remove").forEach(btn => {
       btn.addEventListener("click", () => {
         state.items = state.items.filter(it => it.id !== btn.dataset.id);
+        saveSession();
         renderItems();
       });
     });
@@ -549,7 +675,8 @@
   // ---------- Shared: compute breakdown ----------
   function computeBreakdown(){
     let perPerson = {};
-    state.people.forEach(p => perPerson[p] = { total: 0, lines: [] });
+    let paid = {};
+    state.people.forEach(p => { perPerson[p] = { total: 0, lines: [] }; paid[p] = 0; });
     let grandTotal = 0;
 
     if(state.mode === "equal"){
@@ -559,6 +686,7 @@
         perPerson[p].total = share;
         perPerson[p].lines.push({ label: "Equal share of total", amt: share });
       });
+      if(state.equalPaidBy) paid[state.equalPaidBy] = grandTotal;
     } else {
       state.items.forEach(it => {
         grandTotal += it.cost;
@@ -567,35 +695,86 @@
           perPerson[p].total += share;
           perPerson[p].lines.push({ label: it.name, amt: share });
         });
+        if(it.paidBy) paid[it.paidBy] = (paid[it.paidBy] || 0) + it.cost;
       });
     }
-    return { perPerson, grandTotal };
+
+    const netBalance = {};
+    state.people.forEach(p => { netBalance[p] = paid[p] - perPerson[p].total; });
+
+    const settlements = computeSettlements(netBalance);
+
+    return { perPerson, grandTotal, paid, netBalance, settlements };
+  }
+
+  function computeSettlements(netBalance){
+    const eps = 0.005;
+    const creditors = [];
+    const debtors = [];
+    Object.keys(netBalance).forEach(p => {
+      const v = netBalance[p];
+      if(v > eps) creditors.push({ p, amt: v });
+      else if(v < -eps) debtors.push({ p, amt: -v });
+    });
+    creditors.sort((a, b) => b.amt - a.amt);
+    debtors.sort((a, b) => b.amt - a.amt);
+
+    const settlements = [];
+    let i = 0, j = 0;
+    while(i < debtors.length && j < creditors.length){
+      const pay = Math.min(debtors[i].amt, creditors[j].amt);
+      if(pay > eps) settlements.push({ from: debtors[i].p, to: creditors[j].p, amount: pay });
+      debtors[i].amt -= pay;
+      creditors[j].amt -= pay;
+      if(debtors[i].amt <= eps) i++;
+      if(creditors[j].amt <= eps) j++;
+    }
+    return settlements;
   }
 
   // ---------- Step: breakdown ----------
   function renderBreakdown(){
-    const { perPerson, grandTotal } = computeBreakdown();
+    const { perPerson, grandTotal, paid, netBalance, settlements } = computeBreakdown();
 
     stage.insertAdjacentHTML("beforeend", `
       <p class="step-label"><b>Breakdown</b> · Who owes what</p>
       <div class="breakdown-list">
-        ${state.people.map(p => `
+        ${state.people.map(p => {
+          const net = netBalance[p];
+          const cls = net > 0.005 ? "positive" : net < -0.005 ? "negative" : "";
+          const netLabel = net > 0.005 ? `is owed ₹${money(net)}` : net < -0.005 ? `owes ₹${money(-net)}` : "settled up";
+          return `
           <div class="person-card">
             <div class="person-head">
               <span class="pname">${escapeHtml(p)}</span>
-              <span class="pamt">₹${money(perPerson[p].total)}</span>
+              <span class="pamt ${cls}">${netLabel}</span>
             </div>
+            <div class="person-sub">Paid ₹${money(paid[p])} · Share ₹${money(perPerson[p].total)}</div>
             <div class="person-lines">
               ${perPerson[p].lines.map(l => `
                 <div class="line"><span>${escapeHtml(l.label)}</span><span>₹${money(l.amt)}</span></div>
               `).join("")}
             </div>
           </div>
-        `).join("")}
+        `;}).join("")}
       </div>
       <div class="totals-strip">
         <span class="label">Total spent</span>
         <span class="value">₹${money(grandTotal)}</span>
+      </div>
+
+      <div class="settle-section">
+        <p class="step-label"><b>Settle up</b> · Fewest payments to clear it</p>
+        <div class="settle-list">
+          ${settlements.length ? settlements.map(s => `
+            <div class="settle-row">
+              <span class="who">${escapeHtml(s.from)}</span>
+              <span class="arrow">owes</span>
+              <span class="who">${escapeHtml(s.to)}</span>
+              <span class="amt">₹${money(s.amount)}</span>
+            </div>
+          `).join("") : `<div class="settle-empty">Everyone's already settled up.</div>`}
+        </div>
       </div>
 
       <div class="export-row">
@@ -613,8 +792,9 @@
       render();
     });
     document.getElementById("start-over").addEventListener("click", () => {
-      state.people = []; state.mode = null; state.equalTotal = null; state.items = [];
+      state.people = []; state.mode = null; state.equalTotal = null; state.equalPaidBy = null; state.items = [];
       state.step = "names";
+      clearSession();
       render();
     });
     document.getElementById("export-jpeg").addEventListener("click", exportBreakdownImage);
@@ -636,7 +816,7 @@
     try{
       if(document.fonts && document.fonts.ready) await document.fonts.ready;
 
-      const { perPerson, grandTotal } = computeBreakdown();
+      const { perPerson, grandTotal, paid, netBalance, settlements } = computeBreakdown();
       const scale = 2;               // draw at 2x for a crisp export
       const width = 640;
       const padX = 44;
@@ -647,12 +827,14 @@
       const personGap = 14;
       let contentHeight = 0;
       state.people.forEach(p => {
-        contentHeight += 30 + perPerson[p].lines.length * lineHeight + personGap;
+        contentHeight += 46 + perPerson[p].lines.length * lineHeight + personGap;
       });
+
+      const settleHeight = 40 + (settlements.length ? settlements.length * 34 : 26);
 
       const headerHeight = 150;
       const footerHeight = 96;
-      const height = headerHeight + contentHeight + footerHeight;
+      const height = headerHeight + contentHeight + settleHeight + footerHeight;
 
       const canvas = document.createElement("canvas");
       canvas.width = width * scale;
@@ -694,15 +876,24 @@
       // per-person rows
       y += 26;
       state.people.forEach(p => {
+        const net = netBalance[p];
+        const netColor = net > 0.005 ? green : net < -0.005 ? "#B0402E" : inkSoft;
+        const netLabel = net > 0.005 ? `is owed ₹${money(net)}` : net < -0.005 ? `owes ₹${money(-net)}` : "settled up";
+
         ctx.fillStyle = ink;
         ctx.font = "600 17px 'Fraunces', serif";
         ctx.fillText(p, padX, y);
 
-        ctx.font = "600 15px 'IBM Plex Mono', monospace";
-        const amtText = `₹${money(perPerson[p].total)}`;
+        ctx.fillStyle = netColor;
+        ctx.font = "600 13px 'IBM Plex Mono', monospace";
         ctx.textAlign = "right";
-        ctx.fillText(amtText, width - padX, y);
+        ctx.fillText(netLabel, width - padX, y);
         ctx.textAlign = "left";
+
+        y += 16;
+        ctx.fillStyle = inkSoft;
+        ctx.font = "400 11px 'Inter', sans-serif";
+        ctx.fillText(`Paid ₹${money(paid[p])} · Share ₹${money(perPerson[p].total)}`, padX, y);
 
         perPerson[p].lines.forEach(l => {
           y += lineHeight;
@@ -737,6 +928,31 @@
       ctx.textAlign = "right";
       ctx.fillText(`₹${money(grandTotal)}`, width - padX, y);
       ctx.textAlign = "left";
+
+      // settle up
+      y += 32;
+      ctx.fillStyle = green;
+      ctx.font = "600 11px 'IBM Plex Mono', monospace";
+      ctx.fillText("SETTLE UP", padX, y);
+
+      if(settlements.length){
+        settlements.forEach(s => {
+          y += 30;
+          ctx.fillStyle = ink;
+          ctx.font = "600 14px 'Inter', sans-serif";
+          ctx.fillText(`${s.from} owes ${s.to}`, padX, y);
+          ctx.fillStyle = "#B0402E";
+          ctx.font = "600 14px 'IBM Plex Mono', monospace";
+          ctx.textAlign = "right";
+          ctx.fillText(`₹${money(s.amount)}`, width - padX, y);
+          ctx.textAlign = "left";
+        });
+      } else {
+        y += 24;
+        ctx.fillStyle = inkSoft;
+        ctx.font = "400 12px 'Inter', sans-serif";
+        ctx.fillText("Everyone's already settled up.", padX, y);
+      }
 
       // footer
       ctx.fillStyle = inkSoft;
@@ -784,6 +1000,7 @@
     ctx.restore();
   }
 
+  loadSession();
   render();
 })();
 </script>
